@@ -13,6 +13,8 @@ use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
 use tokio_postgres::NoTls;
 use uuid::Uuid;
+use std::os::unix::net::UnixListener;
+use actix_web::web::Data;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct User {
@@ -494,7 +496,7 @@ async fn verify_identity(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    println!("Iniciando servidor...");
+    println!("Starting server...");
 
     let db_config = match DatabaseConfig::new().await {
         Ok(config) => config,
@@ -515,7 +517,8 @@ async fn main() -> std::io::Result<()> {
             .service(create_identity_proof)
             .service(verify_identity)
     })
-    .bind("127.0.0.1:8901")?
-    .run()
-    .await
+        .bind("127.0.0.1:8901")?  // Bind to localhost only
+        .workers(2)
+        .run()
+        .await
 }
