@@ -12,13 +12,16 @@ use argon2::{
     },
     Argon2
 };
+use tokio_postgres::{NoTls, Error as PgError};
+use deadpool_postgres::{Config, Pool, Runtime};
+use chrono::{DateTime, Utc};
 
 #[derive(Serialize, Deserialize, Clone)]
 struct User {
     id: Uuid,
     public_key: String,
-    private_key_hash: String, 
-    salt: String,             
+    private_key_hash: String,
+    salt: String,
     name: Option<String>,
     email: Option<String>,
     phone_number: Option<String>,
@@ -44,6 +47,40 @@ struct RegisterUserInfo {
 
 struct AppState {
     users: Mutex<Vec<User>>,
+}
+struct DatabaseConfig {
+    pool: Pool,
+}
+
+// postgresql db
+const CREATE_USERS_TABLE: &str = "
+    CREATE TABLE IF NOT EXISTS users (
+        id UUID PRIMARY KEY,
+        public_key TEXT NOT NULL,
+        private_key_hash TEXT NOT NULL,
+        salt TEXT NOT NULL,
+        name TEXT,
+        email TEXT,
+        phone_number TEXT,
+        gpg_fingerprint TEXT
+    )
+";
+
+impl DatabaseConfig {
+    async fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        let mut cfg = Config::new();
+        // Para conexión local en Nest, solo necesitamos especificar el nombre de la base de datos
+        cfg.dbname = Some("nichokas_EmojiUtils".to_string());
+        // Los demás valores tomarán los defaults que funcionan en el ambiente local de Nest
+
+        let pool = cfg.create_pool(Some(Runtime::Tokio1), NoTls)?;
+
+        // Inicializar la tabla
+        let client = pool.get().await?;
+        client.execute(CREATE_USERS_TABLE, &[]).await?;
+
+        Ok(DatabaseConfig { pool })
+    }
 }
 
 
@@ -105,7 +142,7 @@ async fn register_user(
     };
 
     users.push(user);
-    
+
     // private key on plain text should only be used at here
     HttpResponse::Ok().json(
         serde_json::json!({
