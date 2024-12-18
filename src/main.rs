@@ -13,6 +13,8 @@ use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
 use tokio_postgres::NoTls;
 use uuid::Uuid;
+use std::os::unix::net::UnixListener;
+use actix_web::web::Data;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct User {
@@ -187,9 +189,19 @@ impl DatabaseConfig {
             )
             .await?;
 
-        // Generar secuencia hexadecimal de 10 caracteres
-        let hex_sequence = generate_hex_sequence(10);
-        println!("Secuencia hexadecimal generada: {}", hex_sequence);
+        // Intentar generar un código único (máximo 10 intentos)
+        let mut hex_sequence = String::new();
+        for _ in 0..10 {
+            hex_sequence = generate_hex_sequence(10);
+            if !self.hex_code_exists(&hex_sequence).await? {
+                break;
+            }
+        }
+
+        // Verificar una última vez para estar seguros
+        if self.hex_code_exists(&hex_sequence).await? {
+            return Err("No se pudo generar un código único después de varios intentos".into());
+        }
 
         let proof = IdentityProof {
             id: Uuid::new_v4(),
@@ -275,6 +287,18 @@ impl DatabaseConfig {
         }
 
         Ok(None)
+    }
+    async fn hex_code_exists(&self, hex_code: &str) -> Result<bool, Box<dyn std::error::Error>> {
+        let client = self.pool.get().await?;
+
+        let row = client
+            .query_opt(
+                "SELECT EXISTS(SELECT 1 FROM identity_proofs WHERE emoji_sequence = $1)",
+                &[&hex_code],
+            )
+            .await?;
+
+        Ok(row.map(|r| r.get::<_, bool>(0)).unwrap_or(false))
     }
 }
 
@@ -494,12 +518,12 @@ async fn verify_identity(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    println!("Iniciando servidor...");
+    println!("Starting server...");
 
     let db_config = match DatabaseConfig::new().await {
         Ok(config) => config,
         Err(e) => {
-            eprintln!("Error al conectar a la base de datos: {}", e);
+            eprintln!("Failed to connect to the db: {}", e);
             return Ok(());
         }
     };
@@ -515,7 +539,8 @@ async fn main() -> std::io::Result<()> {
             .service(create_identity_proof)
             .service(verify_identity)
     })
-    .bind("127.0.0.1:8901")?
-    .run()
-    .await
+        .bind("127.0.0.1:8901")?  // Bind to localhost only
+        .workers(2)
+        .run()
+        .await
 }
