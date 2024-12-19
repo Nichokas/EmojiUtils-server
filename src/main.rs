@@ -539,7 +539,7 @@ async fn main() -> std::io::Result<()> {
             .service(create_identity_proof)
             .service(verify_identity)
     })
-        .bind("127.0.0.1:8901")?  // Bind to localhost only
+        .bind("127.0.0.1:37879")?  // Bind to localhost only
         .workers(2)
         .run()
         .await
