@@ -181,7 +181,7 @@ impl DatabaseConfig {
     ) -> Result<IdentityProof, Box<dyn std::error::Error>> {
         let client = self.pool.get().await?;
 
-        // Limpiar pruebas antiguas
+        // Deleted expired proofs
         client
             .execute(
                 "DELETE FROM identity_proofs WHERE created_at < $1",
@@ -189,7 +189,7 @@ impl DatabaseConfig {
             )
             .await?;
 
-        // Intentar generar un código único (máximo 10 intentos)
+        // Try to generate a unique code
         let mut hex_sequence = String::new();
         for _ in 0..10 {
             hex_sequence = generate_hex_sequence(10);
@@ -198,7 +198,7 @@ impl DatabaseConfig {
             }
         }
 
-        // Verificar una última vez para estar seguros
+        // Raise error if it couldn't be done
         if self.hex_code_exists(&hex_sequence).await? {
             return Err("No se pudo generar un código único después de varios intentos".into());
         }
@@ -321,21 +321,21 @@ fn verify_private_key(private_key: &str, hash: &str) -> bool {
         .is_ok()
 }
 fn generate_key_pair() -> (String, String, String, String) {
-    // Genera el par de claves original
+    // Generate the original keypair
     let rng = SystemRandom::new();
     let pkcs8_bytes =
         Ed25519KeyPair::generate_pkcs8(&rng).expect("Error al generar el par de claves");
     let key_pair =
         Ed25519KeyPair::from_pkcs8(pkcs8_bytes.as_ref()).expect("Error al crear el par de claves");
 
-    // Codifica las claves en base64
+    // Encode the keys on base64
     let public_key = general_purpose::STANDARD.encode(key_pair.public_key().as_ref());
     let private_key = general_purpose::STANDARD.encode(pkcs8_bytes.as_ref());
 
-    // Genera el hash y salt para la private key
+    // Calculate the hash and salt for the private key
     let (private_key_hash, salt) = hash_private_key(&private_key);
 
-    // Retorna (public_key, private_key, private_key_hash, salt)
+    // Return (public_key, private_key, private_key_hash, salt)
     (public_key, private_key, private_key_hash, salt)
 }
 
@@ -372,7 +372,7 @@ async fn register_user(
             "private_key": private_key
         })),
         Err(e) => {
-            HttpResponse::InternalServerError().body(format!("Error al registrar usuario: {}", e))
+            HttpResponse::InternalServerError().body(format!("Failed to register a user: {}", e))
         }
     }
 }
@@ -396,9 +396,9 @@ async fn get_user_info(data: web::Data<AppState>, public_key: web::Path<String>)
             });
             HttpResponse::Ok().json(response)
         }
-        Ok(None) => HttpResponse::NotFound().body("Usuario no encontrado"),
+        Ok(None) => HttpResponse::NotFound().body("User not found"),
         Err(e) => {
-            HttpResponse::InternalServerError().body(format!("Error al buscar usuario: {}", e))
+            HttpResponse::InternalServerError().body(format!("Error while searching a user: {}", e))
         }
     }
 }
@@ -438,13 +438,13 @@ async fn update_user_info(
         user.gpg_fingerprint = new_info.gpg_fingerprint.clone();
 
         match data.db.update_user(&user).await {
-            Ok(true) => HttpResponse::Ok().body("Información actualizada exitosamente"),
-            Ok(false) => HttpResponse::NotFound().body("Usuario no encontrado"),
+            Ok(true) => HttpResponse::Ok().body("Info successfully updated"),
+            Ok(false) => HttpResponse::NotFound().body("User not found"),
             Err(e) => HttpResponse::InternalServerError()
-                .body(format!("Error al actualizar usuario: {}", e)),
+                .body(format!("Error while updating the user: {}", e)),
         }
     } else {
-        HttpResponse::Unauthorized().body("Autenticación fallida")
+        HttpResponse::Unauthorized().body("Failed auth")
     }
 }
 
@@ -457,14 +457,14 @@ async fn create_identity_proof(
         Ok(Some(user)) => match data.db.create_identity_proof(user.id).await {
             Ok(proof) => HttpResponse::Ok().json(proof),
             Err(e) => {
-                eprintln!("Error al crear prueba de identidad: {}", e);
-                HttpResponse::InternalServerError().body("Error al crear prueba de identidad")
+                eprintln!("Error while creating the proof: {}", e);
+                HttpResponse::InternalServerError().body("Error while creating the identity proof")
             }
         },
-        Ok(None) => HttpResponse::Unauthorized().body("Autenticación fallida"),
+        Ok(None) => HttpResponse::Unauthorized().body("Failed auth"),
         Err(e) => {
-            eprintln!("Error al buscar usuario: {}", e);
-            HttpResponse::InternalServerError().body("Error al buscar usuario")
+            eprintln!("Err while searching user: {}", e);
+            HttpResponse::InternalServerError().body("Failed to search the user")
         }
     }
 }
@@ -474,13 +474,6 @@ async fn verify_identity(
     data: web::Data<AppState>,
     req: web::Json<VerifyProofRequest>,
 ) -> impl Responder {
-    println!("Recibiendo verificación:");
-    println!("Public key: {}", req.public_key);
-    println!(
-        "Emoji sequence (bytes): {:?}",
-        req.emoji_sequence.as_bytes()
-    );
-    println!("Emoji sequence (chars): {}", req.emoji_sequence);
 
     match data
         .db
@@ -488,29 +481,27 @@ async fn verify_identity(
         .await
     {
         Ok(true) => {
-            println!("Verificación exitosa");
             HttpResponse::Ok()
                 .content_type("application/json")
                 .json(serde_json::json!({
                     "verified": true,
-                    "message": "Identidad verificada correctamente"
+                    "message": "Identity successfully verified"
                 }))
         }
         Ok(false) => {
-            println!("Verificación fallida");
             HttpResponse::Ok()
                 .content_type("application/json")
                 .json(serde_json::json!({
                     "verified": false,
-                    "message": "Secuencia inválida o expirada"
+                    "message": "Invalid proof or expired"
                 }))
         }
         Err(e) => {
-            eprintln!("Error en verificación: {}", e);
+            eprintln!("Verification error: {}", e);
             HttpResponse::InternalServerError()
                 .content_type("application/json")
                 .json(serde_json::json!({
-                    "error": format!("Error en verificación: {}", e)
+                    "error": format!("Error on verification: {}", e)
                 }))
         }
     }
