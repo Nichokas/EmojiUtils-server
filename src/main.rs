@@ -72,6 +72,12 @@ struct VerifyProofRequest {
     emoji_sequence: String,
 }
 
+#[derive(Deserialize)]
+struct CheckIdentityRequest {
+    public_key: String,
+    private_key: String,
+}
+
 const CREATE_USERS_TABLE: &str = "
     CREATE TABLE IF NOT EXISTS users (
         id UUID PRIMARY KEY,
@@ -507,6 +513,37 @@ async fn verify_identity(
     }
 }
 
+#[post("/check")]
+async fn check_identity(
+    data: web::Data<AppState>,
+    req: web::Json<CheckIdentityRequest>,
+) -> impl Responder {
+    // First find the user by public key
+    match data.db.find_user_by_public_key(&req.public_key).await {
+        Ok(Some(user)) => {
+            // Verify if the private key matches
+            if verify_private_key(&req.private_key, &user.private_key_hash) {
+                HttpResponse::Ok().json(serde_json::json!({
+                    "matches": true,
+                    "message": "The public and private keys match"
+                }))
+            } else {
+                HttpResponse::Ok().json(serde_json::json!({
+                    "matches": false,
+                    "message": "The keys do not match"
+                }))
+            }
+        }
+        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({
+            "matches": false,
+            "message": "User not found with the provided public key"
+        })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("Error while verifying identity: {}", e)
+        }))
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     println!("Starting server...");
@@ -529,6 +566,7 @@ async fn main() -> std::io::Result<()> {
             .service(update_user_info)
             .service(create_identity_proof)
             .service(verify_identity)
+            .service(check_identity)
     })
         .bind("127.0.0.1:37879")?  // Bind to localhost only
         .workers(2)
