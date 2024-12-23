@@ -164,10 +164,10 @@ impl DatabaseConfig {
         let result = client
             .execute(
                 "UPDATE users SET
-             name = $1,
-             email = $2,
-             phone_number = $3,
-             gpg_fingerprint = $4
+                name = COALESCE($1, name),
+                email = COALESCE($2, email),
+                phone_number = COALESCE($3, phone_number),
+                gpg_fingerprint = COALESCE($4, gpg_fingerprint)
              WHERE id = $5",
                 &[
                     &user.name,
@@ -414,7 +414,7 @@ async fn update_user_info(
     new_info: web::Json<UpdateUserInfo>,
 ) -> impl Responder {
     let mut found_user = None;
-    
+
     if let Ok(client) = data.db.pool.get().await {
         if let Ok(rows) = client.query("SELECT * FROM users", &[]).await {
             for row in rows {
@@ -438,11 +438,21 @@ async fn update_user_info(
     }
 
     if let Some(mut user) = found_user {
-        user.name = new_info.name.clone();
-        user.email = new_info.email.clone();
-        user.phone_number = new_info.phone_number.clone();
-        user.gpg_fingerprint = new_info.gpg_fingerprint.clone();
+        // Solo actualizar los campos que se proporcionaron en la solicitud
+        if let Some(name) = &new_info.name {
+            user.name = Some(name.clone());
+        }
+        if let Some(email) = &new_info.email {
+            user.email = Some(email.clone());
+        }
+        if let Some(phone_number) = &new_info.phone_number {
+            user.phone_number = Some(phone_number.clone());
+        }
+        if let Some(gpg_fingerprint) = &new_info.gpg_fingerprint {
+            user.gpg_fingerprint = Some(gpg_fingerprint.clone());
+        }
 
+        // Actualizar en la base de datos
         match data.db.update_user(&user).await {
             Ok(true) => HttpResponse::Ok().body("Info successfully updated"),
             Ok(false) => HttpResponse::NotFound().body("User not found"),
