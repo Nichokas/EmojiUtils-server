@@ -4,7 +4,7 @@ use argon2::{
     Argon2,
 };
 use base64::{engine::general_purpose, Engine};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, Timelike, Utc};
 use deadpool_postgres::{Config, Pool, Runtime};
 use rand::thread_rng;
 use rand::Rng;
@@ -68,7 +68,6 @@ struct CreateProofRequest {
 
 #[derive(Deserialize)]
 struct VerifyProofRequest {
-    public_key: String,
     emoji_sequence: String,
 }
 
@@ -233,39 +232,29 @@ impl DatabaseConfig {
     }
     async fn verify_identity_proof(
         &self,
-        public_key: &str,
         emoji_sequence: &str,
-    ) -> Result<bool, Box<dyn std::error::Error>> {
+    ) -> Result<Option<(DateTime<Utc>, String, bool)>, Box<dyn std::error::Error>> {
         let client = self.pool.get().await?;
-
-        println!("Verificando en DB:");
-        println!("Public key: {}", public_key);
-        println!("Emoji sequence a verificar: {}", emoji_sequence);
-
         let five_minutes_ago = Utc::now() - Duration::minutes(5);
 
         let row = client
             .query_opt(
-                "SELECT p.* FROM identity_proofs p
+                "SELECT p.created_at, u.public_key 
+             FROM identity_proofs p
              JOIN users u ON p.user_id = u.id
-             WHERE u.public_key = $1 
-             AND p.emoji_sequence = $2 
-             AND p.created_at > $3",
-                &[&public_key, &emoji_sequence, &five_minutes_ago],
+             WHERE p.emoji_sequence = $1 
+             AND p.created_at > $2",
+                &[&emoji_sequence, &five_minutes_ago],
             )
             .await?;
 
-        if let Some(row) = &row {
-            println!("Encontrada prueba de identidad:");
-            println!(
-                "Emoji sequence en DB: {}",
-                row.get::<_, String>("emoji_sequence")
-            );
+        if let Some(row) = row {
+            let created_at: DateTime<Utc> = row.get("created_at");
+            let public_key: String = row.get("public_key");
+            Ok(Some((created_at, public_key, true)))
         } else {
-            println!("No se encontró prueba de identidad válida");
+            Ok(None)
         }
-
-        Ok(row.is_some())
     }
     async fn find_user_by_private_key(
         &self,
@@ -490,21 +479,22 @@ async fn verify_identity(
     data: web::Data<AppState>,
     req: web::Json<VerifyProofRequest>,
 ) -> impl Responder {
-
-    match data
-        .db
-        .verify_identity_proof(&req.public_key, &req.emoji_sequence)
-        .await
-    {
-        Ok(true) => {
+    match data.db.verify_identity_proof(&req.emoji_sequence).await {
+        Ok(Some((created_at, public_key, valid))) => {
             HttpResponse::Ok()
                 .content_type("application/json")
                 .json(serde_json::json!({
-                    "verified": true,
-                    "message": "Identity successfully verified"
+                    "verified": valid,
+                    "created_at": created_at,
+                    "public_key": public_key,
+                    "created_at_utc": {
+                        "hour": created_at.hour(),
+                        "minute": created_at.minute(),
+                        "second": created_at.second()
+                    }
                 }))
         }
-        Ok(false) => {
+        Ok(None) => {
             HttpResponse::Ok()
                 .content_type("application/json")
                 .json(serde_json::json!({
