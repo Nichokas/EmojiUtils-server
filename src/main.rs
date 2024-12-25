@@ -73,7 +73,6 @@ struct VerifyProofRequest {
 
 #[derive(Deserialize)]
 struct CheckIdentityRequest {
-    public_key: String,
     private_key: String,
 }
 
@@ -256,14 +255,33 @@ impl DatabaseConfig {
             Ok(None)
         }
     }
+   
+    async fn hex_code_exists(&self, hex_code: &str) -> Result<bool, Box<dyn std::error::Error>> {
+        let client = self.pool.get().await?;
+
+        let row = client
+            .query_opt(
+                "SELECT EXISTS(SELECT 1 FROM identity_proofs WHERE emoji_sequence = $1)",
+                &[&hex_code],
+            )
+            .await?;
+
+        Ok(row.map(|r| r.get::<_, bool>(0)).unwrap_or(false))
+    }
     async fn find_user_by_private_key(
         &self,
         private_key: &str,
     ) -> Result<Option<User>, Box<dyn std::error::Error>> {
         let client = self.pool.get().await?;
 
-        let rows = client.query("SELECT * FROM users", &[]).await?;
+        let rows = client
+            .query(
+                "SELECT * FROM users",
+                &[],
+            )
+            .await?;
 
+        // Iteramos por los usuarios hasta encontrar uno que coincida con la private key
         for row in rows {
             let user = User {
                 id: row.get("id"),
@@ -283,17 +301,47 @@ impl DatabaseConfig {
 
         Ok(None)
     }
-    async fn hex_code_exists(&self, hex_code: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    async fn find_user_by_private_key_only(
+        &self,
+        private_key: &str,
+    ) -> Result<Option<User>, Box<dyn std::error::Error>> {
         let client = self.pool.get().await?;
 
-        let row = client
-            .query_opt(
-                "SELECT EXISTS(SELECT 1 FROM identity_proofs WHERE emoji_sequence = $1)",
-                &[&hex_code],
+        // Primero calculamos el hash de la private key proporcionada
+        let (private_key_hash, _) = hash_private_key(private_key);
+
+        // Buscamos usuarios que coincidan con el patrón del hash
+        let hash_pattern = format!("{}%", private_key_hash.split('$').take(4).collect::<Vec<_>>().join("$"));
+
+        let rows = client
+            .query(
+                "SELECT * FROM users 
+                 WHERE private_key_hash LIKE $1 
+                 ORDER BY id DESC 
+                 LIMIT 10",
+                &[&hash_pattern],
             )
             .await?;
 
-        Ok(row.map(|r| r.get::<_, bool>(0)).unwrap_or(false))
+        // Verificamos la private key con los resultados filtrados
+        for row in rows {
+            let user = User {
+                id: row.get("id"),
+                public_key: row.get("public_key"),
+                private_key_hash: row.get("private_key_hash"),
+                salt: row.get("salt"),
+                name: row.get("name"),
+                email: row.get("email"),
+                phone_number: row.get("phone_number"),
+                gpg_fingerprint: row.get("gpg_fingerprint"),
+            };
+
+            if verify_private_key(private_key, &user.private_key_hash) {
+                return Ok(Some(user));
+            }
+        }
+
+        Ok(None)
     }
 }
 
@@ -518,29 +566,26 @@ async fn check_identity(
     data: web::Data<AppState>,
     req: web::Json<CheckIdentityRequest>,
 ) -> impl Responder {
-    // First find the user by public key
-    match data.db.find_user_by_public_key(&req.public_key).await {
+    match data.db.find_user_by_private_key_only(&req.private_key).await {
         Ok(Some(user)) => {
-            // Verify if the private key matches
-            if verify_private_key(&req.private_key, &user.private_key_hash) {
-                HttpResponse::Ok().json(serde_json::json!({
-                    "matches": true,
-                    "message": "The public and private keys match"
-                }))
-            } else {
-                HttpResponse::Ok().json(serde_json::json!({
-                    "matches": false,
-                    "message": "The keys do not match"
-                }))
-            }
+            // Si encontramos un usuario, devolvemos true y su public key
+            HttpResponse::Ok().json(serde_json::json!({
+                "exists": true,
+                "public_key": user.public_key
+            }))
         }
-        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({
-            "matches": false,
-            "message": "User not found with the provided public key"
-        })),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": format!("Error while verifying identity: {}", e)
-        }))
+        Ok(None) => {
+            // Si no encontramos usuario, devolvemos false sin public key
+            HttpResponse::Ok().json(serde_json::json!({
+                "exists": false
+            }))
+        }
+        Err(e) => {
+            eprintln!("Error checking identity: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Error while checking identity: {}", e)
+            }))
+        }
     }
 }
 
