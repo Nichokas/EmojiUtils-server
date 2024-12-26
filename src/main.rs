@@ -145,12 +145,35 @@ impl DatabaseConfig {
         let mut cfg = Config::new();
         cfg.dbname = Some("nichokas_EmojiUtils".to_string());
 
-        let pool = cfg.create_pool(Some(Runtime::Tokio1), NoTls)?;
+        let heartbeat = HeartbeatConfig::new();
 
-        let client = pool.get().await?;
+        let pool = match cfg.create_pool(Some(Runtime::Tokio1), NoTls) {
+            Ok(pool) => pool,
+            Err(e) => {
+                heartbeat.send_heartbeat(false, false, Some(format!("Failed to create connection pool: {}", e))).await;
+                return Err(e.into());
+            }
+        };
 
-        client.execute(CREATE_USERS_TABLE, &[]).await?;
-        client.execute(CREATE_IDENTITY_PROOFS_TABLE, &[]).await?;
+        let client = match pool.get().await {
+            Ok(client) => client,
+            Err(e) => {
+                heartbeat.send_heartbeat(false, false, Some(format!("Failed to get database connection: {}", e))).await;
+                return Err(e.into());
+            }
+        };
+
+        if let Err(e) = client.execute(CREATE_USERS_TABLE, &[]).await {
+            heartbeat.send_heartbeat(false, false, Some(format!("Failed to create users table: {}", e))).await;
+            return Err(e.into());
+        }
+
+        if let Err(e) = client.execute(CREATE_IDENTITY_PROOFS_TABLE, &[]).await {
+            heartbeat.send_heartbeat(false, false, Some(format!("Failed to create identity proofs table: {}", e))).await;
+            return Err(e.into());
+        }
+        
+        heartbeat.send_heartbeat(false, true, None).await;
 
         Ok(DatabaseConfig { pool })
     }
