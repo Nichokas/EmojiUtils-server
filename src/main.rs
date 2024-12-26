@@ -79,11 +79,6 @@ struct CheckIdentityRequest {
     private_key: String,
 }
 
-#[derive(Deserialize)]
-struct UserInfoRequest {
-    public_key: String,
-}
-
 const CREATE_USERS_TABLE: &str = "
     CREATE TABLE IF NOT EXISTS users (
         id UUID PRIMARY KEY,
@@ -530,14 +525,11 @@ async fn register_user(
     }
 }
 
-#[post("/user_info")] 
-async fn get_user_info(
-    data: web::Data<AppState>,
-    req: web::Json<UserInfoRequest>,
-) -> impl Responder {
-    let decoded_key = match urlencoding::decode(&req.public_key) {
+#[get("/user_info/{public_key}")]
+async fn get_user_info(data: web::Data<AppState>, public_key: web::Path<String>) -> impl Responder {
+    let decoded_key = match urlencoding::decode(public_key.as_ref()) {
         Ok(decoded) => decoded.into_owned(),
-        Err(_) => req.public_key.to_string(),
+        Err(_) => public_key.to_string(),
     };
 
     match data.db.find_user_by_public_key(&decoded_key).await {
@@ -558,7 +550,6 @@ async fn get_user_info(
         }
     }
 }
-
 #[put("/update_user_info")]
 async fn update_user_info(
     data: web::Data<AppState>,
