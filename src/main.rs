@@ -15,9 +15,6 @@ use tokio_postgres::NoTls;
 use uuid::Uuid;
 use std::os::unix::net::UnixListener;
 use actix_web::web::Data;
-use dotenv::dotenv;
-use std::env;
-use reqwest::Client;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct User {
@@ -79,6 +76,11 @@ struct CheckIdentityRequest {
     private_key: String,
 }
 
+#[derive(Deserialize)]
+struct UserInfoRequest {
+    public_key: String,
+}
+
 const CREATE_USERS_TABLE: &str = "
     CREATE TABLE IF NOT EXISTS users (
         id UUID PRIMARY KEY,
@@ -101,75 +103,39 @@ const CREATE_IDENTITY_PROOFS_TABLE: &str = "
     )
 ";
 
-async fn send_heartbeat(fail: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::new();
-    let base_url = env::var("BETTERSTACK_HEARTBEAT_URL")
-        .expect("BETTERSTACK_HEARTBEAT_URL must be set in .env file");
-
-    let url = if fail {
-        format!("{}/fail", base_url)
-    } else {
-        base_url
-    };
-
-    client.get(&url).send().await?;
-    Ok(())
-}
-
 impl DatabaseConfig {
     async fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let mut cfg = Config::new();
         cfg.dbname = Some("nichokas_EmojiUtils".to_string());
 
-        let pool = match cfg.create_pool(Some(Runtime::Tokio1), NoTls) {
-            Ok(pool) => pool,
-            Err(e) => {
-                let _ = send_heartbeat(true).await;
-                return Err(e.into());
-            }
-        };
+        let pool = cfg.create_pool(Some(Runtime::Tokio1), NoTls)?;
 
-        let client = match pool.get().await {
-            Ok(client) => client,
-            Err(e) => {
-                let _ = send_heartbeat(true).await;
-                return Err(e.into());
-            }
-        };
+        let client = pool.get().await?;
 
-        if let Err(e) = client.execute(CREATE_USERS_TABLE, &[]).await {
-            let _ = send_heartbeat(true).await;
-            return Err(e.into());
-        }
-        if let Err(e) = client.execute(CREATE_IDENTITY_PROOFS_TABLE, &[]).await {
-            let _ = send_heartbeat(true).await;
-            return Err(e.into());
-        }
+        client.execute(CREATE_USERS_TABLE, &[]).await?;
+        client.execute(CREATE_IDENTITY_PROOFS_TABLE, &[]).await?;
 
-        let _ = send_heartbeat(false).await;
         Ok(DatabaseConfig { pool })
     }
 
     async fn save_user(&self, user: &User) -> Result<(), Box<dyn std::error::Error>> {
-        let client = match self.pool.get().await {
-            Ok(client) => client,
-            Err(e) => {
-                let _ = send_heartbeat(true).await;
-                return Err(e.into());
-            }
-        };
+        let client = self.pool.get().await?;
 
-        if let Err(e) = client.execute(
+        let result = client.execute(
             "INSERT INTO users (id, public_key, private_key_hash, salt, name, email, phone_number, gpg_fingerprint)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-            &[&user.id, &user.public_key, &user.private_key_hash, &user.salt, &user.name,
-                &user.email, &user.phone_number, &user.gpg_fingerprint],
-        ).await {
-            let _ = send_heartbeat(true).await;
-            return Err(e.into());
-        }
+            &[
+                &user.id,
+                &user.public_key,
+                &user.private_key_hash,
+                &user.salt,
+                &user.name,
+                &user.email,
+                &user.phone_number,
+                &user.gpg_fingerprint,
+            ],
+        ).await?;
 
-        let _ = send_heartbeat(false).await;
         Ok(())
     }
 
@@ -177,25 +143,12 @@ impl DatabaseConfig {
         &self,
         public_key: &str,
     ) -> Result<Option<User>, Box<dyn std::error::Error>> {
-        let client = match self.pool.get().await {
-            Ok(client) => client,
-            Err(e) => {
-                let _ = send_heartbeat(true).await;
-                return Err(e.into());
-            }
-        };
+        let client = self.pool.get().await?;
 
-        let row = match client
+        let row = client
             .query_opt("SELECT * FROM users WHERE public_key = $1", &[&public_key])
-            .await {
-            Ok(row) => row,
-            Err(e) => {
-                let _ = send_heartbeat(true).await;
-                return Err(e.into());
-            }
-        };
+            .await?;
 
-        let _ = send_heartbeat(false).await;
         Ok(row.map(|row| User {
             id: row.get("id"),
             public_key: row.get("public_key"),
@@ -209,55 +162,43 @@ impl DatabaseConfig {
     }
 
     async fn update_user(&self, user: &User) -> Result<bool, Box<dyn std::error::Error>> {
-        let client = match self.pool.get().await {
-            Ok(client) => client,
-            Err(e) => {
-                let _ = send_heartbeat(true).await;
-                return Err(e.into());
-            }
-        };
+        let client = self.pool.get().await?;
 
-        let result = match client
+        let result = client
             .execute(
-                "UPDATE users SET name = COALESCE($1, name), email = COALESCE($2, email),
-                 phone_number = COALESCE($3, phone_number), gpg_fingerprint = COALESCE($4, gpg_fingerprint)
-                 WHERE id = $5",
-                &[&user.name, &user.email, &user.phone_number, &user.gpg_fingerprint, &user.id],
+                "UPDATE users SET
+                name = COALESCE($1, name),
+                email = COALESCE($2, email),
+                phone_number = COALESCE($3, phone_number),
+                gpg_fingerprint = COALESCE($4, gpg_fingerprint)
+             WHERE id = $5",
+                &[
+                    &user.name,
+                    &user.email,
+                    &user.phone_number,
+                    &user.gpg_fingerprint,
+                    &user.id,
+                ],
             )
-            .await {
-            Ok(result) => result,
-            Err(e) => {
-                let _ = send_heartbeat(true).await;
-                return Err(e.into());
-            }
-        };
+            .await?;
 
-        let _ = send_heartbeat(false).await;
         Ok(result > 0)
     }
-
     async fn create_identity_proof(
         &self,
         user_id: Uuid,
     ) -> Result<IdentityProof, Box<dyn std::error::Error>> {
-        let client = match self.pool.get().await {
-            Ok(client) => client,
-            Err(e) => {
-                let _ = send_heartbeat(true).await;
-                return Err(e.into());
-            }
-        };
+        let client = self.pool.get().await?;
 
-        if let Err(e) = client
+        // Deleted expired proofs
+        client
             .execute(
                 "DELETE FROM identity_proofs WHERE created_at < $1",
                 &[&(Utc::now() - Duration::minutes(5))],
             )
-            .await {
-            let _ = send_heartbeat(true).await;
-            return Err(e.into());
-        }
+            .await?;
 
+        // Try to generate a unique code
         let mut hex_sequence = String::new();
         for _ in 0..10 {
             hex_sequence = generate_hex_sequence(10);
@@ -266,8 +207,8 @@ impl DatabaseConfig {
             }
         }
 
+        // Raise error if it couldn't be done
         if self.hex_code_exists(&hex_sequence).await? {
-            let _ = send_heartbeat(true).await;
             return Err("No se pudo generar un código único después de varios intentos".into());
         }
 
@@ -278,50 +219,39 @@ impl DatabaseConfig {
             created_at: Utc::now(),
         };
 
-        if let Err(e) = client
+        client
             .execute(
                 "INSERT INTO identity_proofs (id, user_id, emoji_sequence, created_at) 
-                 VALUES ($1, $2, $3, $4)",
-                &[&proof.id, &proof.user_id, &proof.emoji_sequence, &proof.created_at],
+             VALUES ($1, $2, $3, $4)",
+                &[
+                    &proof.id,
+                    &proof.user_id,
+                    &proof.emoji_sequence,
+                    &proof.created_at,
+                ],
             )
-            .await {
-            let _ = send_heartbeat(true).await;
-            return Err(e.into());
-        }
+            .await?;
 
-        let _ = send_heartbeat(false).await;
         Ok(proof)
     }
-
     async fn verify_identity_proof(
         &self,
         emoji_sequence: &str,
     ) -> Result<Option<(DateTime<Utc>, String, bool)>, Box<dyn std::error::Error>> {
-        let client = match self.pool.get().await {
-            Ok(client) => client,
-            Err(e) => {
-                let _ = send_heartbeat(true).await;
-                return Err(e.into());
-            }
-        };
-
+        let client = self.pool.get().await?;
         let five_minutes_ago = Utc::now() - Duration::minutes(5);
-        let row = match client
+
+        let row = client
             .query_opt(
-                "SELECT p.created_at, u.public_key FROM identity_proofs p
-                 JOIN users u ON p.user_id = u.id
-                 WHERE p.emoji_sequence = $1 AND p.created_at > $2",
+                "SELECT p.created_at, u.public_key 
+             FROM identity_proofs p
+             JOIN users u ON p.user_id = u.id
+             WHERE p.emoji_sequence = $1 
+             AND p.created_at > $2",
                 &[&emoji_sequence, &five_minutes_ago],
             )
-            .await {
-            Ok(row) => row,
-            Err(e) => {
-                let _ = send_heartbeat(true).await;
-                return Err(e.into());
-            }
-        };
+            .await?;
 
-        let _ = send_heartbeat(false).await;
         if let Some(row) = row {
             let created_at: DateTime<Utc> = row.get("created_at");
             let public_key: String = row.get("public_key");
@@ -330,53 +260,33 @@ impl DatabaseConfig {
             Ok(None)
         }
     }
-
+   
     async fn hex_code_exists(&self, hex_code: &str) -> Result<bool, Box<dyn std::error::Error>> {
-        let client = match self.pool.get().await {
-            Ok(client) => client,
-            Err(e) => {
-                let _ = send_heartbeat(true).await;
-                return Err(e.into());
-            }
-        };
+        let client = self.pool.get().await?;
 
-        let row = match client
+        let row = client
             .query_opt(
                 "SELECT EXISTS(SELECT 1 FROM identity_proofs WHERE emoji_sequence = $1)",
                 &[&hex_code],
             )
-            .await {
-            Ok(row) => row,
-            Err(e) => {
-                let _ = send_heartbeat(true).await;
-                return Err(e.into());
-            }
-        };
+            .await?;
 
-        let _ = send_heartbeat(false).await;
         Ok(row.map(|r| r.get::<_, bool>(0)).unwrap_or(false))
     }
-
     async fn find_user_by_private_key(
         &self,
         private_key: &str,
     ) -> Result<Option<User>, Box<dyn std::error::Error>> {
-        let client = match self.pool.get().await {
-            Ok(client) => client,
-            Err(e) => {
-                let _ = send_heartbeat(true).await;
-                return Err(e.into());
-            }
-        };
+        let client = self.pool.get().await?;
 
-        let rows = match client.query("SELECT * FROM users", &[]).await {
-            Ok(rows) => rows,
-            Err(e) => {
-                let _ = send_heartbeat(true).await;
-                return Err(e.into());
-            }
-        };
+        let rows = client
+            .query(
+                "SELECT * FROM users",
+                &[],
+            )
+            .await?;
 
+        // Iteramos por los usuarios hasta encontrar uno que coincida con la private key
         for row in rows {
             let user = User {
                 id: row.get("id"),
@@ -390,43 +300,35 @@ impl DatabaseConfig {
             };
 
             if verify_private_key(private_key, &user.private_key_hash) {
-                let _ = send_heartbeat(false).await;
                 return Ok(Some(user));
             }
         }
 
-        let _ = send_heartbeat(false).await;
         Ok(None)
     }
-
     async fn find_user_by_private_key_only(
         &self,
         private_key: &str,
     ) -> Result<Option<User>, Box<dyn std::error::Error>> {
-        let client = match self.pool.get().await {
-            Ok(client) => client,
-            Err(e) => {
-                let _ = send_heartbeat(true).await;
-                return Err(e.into());
-            }
-        };
+        let client = self.pool.get().await?;
 
+        // Primero calculamos el hash de la private key proporcionada
         let (private_key_hash, _) = hash_private_key(private_key);
+
+        // Buscamos usuarios que coincidan con el patrón del hash
         let hash_pattern = format!("{}%", private_key_hash.split('$').take(4).collect::<Vec<_>>().join("$"));
 
-        let rows = match client
+        let rows = client
             .query(
-                "SELECT * FROM users WHERE private_key_hash LIKE $1 ORDER BY id DESC LIMIT 10",
+                "SELECT * FROM users 
+                 WHERE private_key_hash LIKE $1 
+                 ORDER BY id DESC 
+                 LIMIT 10",
                 &[&hash_pattern],
             )
-            .await {
-            Ok(rows) => rows,
-            Err(e) => {
-                let _ = send_heartbeat(true).await;
-                return Err(e.into());
-            }
-        };
+            .await?;
 
+        // Verificamos la private key con los resultados filtrados
         for row in rows {
             let user = User {
                 id: row.get("id"),
@@ -440,12 +342,10 @@ impl DatabaseConfig {
             };
 
             if verify_private_key(private_key, &user.private_key_hash) {
-                let _ = send_heartbeat(false).await;
                 return Ok(Some(user));
             }
         }
 
-        let _ = send_heartbeat(false).await;
         Ok(None)
     }
 }
@@ -525,11 +425,14 @@ async fn register_user(
     }
 }
 
-#[get("/user_info/{public_key}")]
-async fn get_user_info(data: web::Data<AppState>, public_key: web::Path<String>) -> impl Responder {
-    let decoded_key = match urlencoding::decode(public_key.as_ref()) {
+#[post("/user_info")] 
+async fn get_user_info(
+    data: web::Data<AppState>,
+    req: web::Json<UserInfoRequest>,
+) -> impl Responder {
+    let decoded_key = match urlencoding::decode(&req.public_key) {
         Ok(decoded) => decoded.into_owned(),
-        Err(_) => public_key.to_string(),
+        Err(_) => req.public_key.to_string(),
     };
 
     match data.db.find_user_by_public_key(&decoded_key).await {
@@ -550,6 +453,7 @@ async fn get_user_info(data: web::Data<AppState>, public_key: web::Path<String>)
         }
     }
 }
+
 #[put("/update_user_info")]
 async fn update_user_info(
     data: web::Data<AppState>,
@@ -696,7 +600,6 @@ async fn check_identity(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    dotenv().ok();
     println!("Starting server...");
 
     let db_config = match DatabaseConfig::new().await {
