@@ -15,7 +15,6 @@ use tokio_postgres::NoTls;
 use uuid::Uuid;
 use std::os::unix::net::UnixListener;
 use actix_web::web::Data;
-use reqwest::Client;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct User {
@@ -48,17 +47,10 @@ struct RegisterUserInfo {
 
 struct AppState {
     db: DatabaseConfig,
-    heartbeat: HeartbeatConfig,
 }
 
 struct DatabaseConfig {
     pool: Pool,
-}
-
-struct HeartbeatConfig {
-    api_url: String,
-    db_url: String,
-    http_client: Client,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -111,69 +103,17 @@ const CREATE_IDENTITY_PROOFS_TABLE: &str = "
     )
 ";
 
-impl HeartbeatConfig {
-    fn new() -> Self {
-        HeartbeatConfig {
-            api_url: "https://uptime.betterstack.com/api/v1/heartbeat/sXwedkmYmLGHZxX6fDAGT2f8".to_string(),
-            db_url: "https://uptime.betterstack.com/api/v1/heartbeat/jQiy8ukquwL2TscJSRUEpG43".to_string(),
-            http_client: Client::new(),
-        }
-    }
-
-    async fn send_heartbeat(&self, is_api: bool, success: bool, message: Option<String>) {
-        let url = if is_api { &self.api_url } else { &self.db_url };
-        let url = if success {
-            url.to_string()
-        } else {
-            format!("{}/fail", url)
-        };
-
-        if let Some(msg) = message {
-            if let Err(e) = self.http_client.post(&url).body(msg).send().await {
-                eprintln!("Failed to send heartbeat: {}", e);
-            }
-        } else {
-            if let Err(e) = self.http_client.get(&url).send().await {
-                eprintln!("Failed to send heartbeat: {}", e);
-            }
-        }
-    }
-}
-
 impl DatabaseConfig {
     async fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let mut cfg = Config::new();
         cfg.dbname = Some("nichokas_EmojiUtils".to_string());
 
-        let heartbeat = HeartbeatConfig::new();
+        let pool = cfg.create_pool(Some(Runtime::Tokio1), NoTls)?;
 
-        let pool = match cfg.create_pool(Some(Runtime::Tokio1), NoTls) {
-            Ok(pool) => pool,
-            Err(e) => {
-                heartbeat.send_heartbeat(false, false, Some(format!("Failed to create connection pool: {}", e))).await;
-                return Err(e.into());
-            }
-        };
+        let client = pool.get().await?;
 
-        let client = match pool.get().await {
-            Ok(client) => client,
-            Err(e) => {
-                heartbeat.send_heartbeat(false, false, Some(format!("Failed to get database connection: {}", e))).await;
-                return Err(e.into());
-            }
-        };
-
-        if let Err(e) = client.execute(CREATE_USERS_TABLE, &[]).await {
-            heartbeat.send_heartbeat(false, false, Some(format!("Failed to create users table: {}", e))).await;
-            return Err(e.into());
-        }
-
-        if let Err(e) = client.execute(CREATE_IDENTITY_PROOFS_TABLE, &[]).await {
-            heartbeat.send_heartbeat(false, false, Some(format!("Failed to create identity proofs table: {}", e))).await;
-            return Err(e.into());
-        }
-        
-        heartbeat.send_heartbeat(false, true, None).await;
+        client.execute(CREATE_USERS_TABLE, &[]).await?;
+        client.execute(CREATE_IDENTITY_PROOFS_TABLE, &[]).await?;
 
         Ok(DatabaseConfig { pool })
     }
@@ -475,27 +415,17 @@ async fn register_user(
     };
 
     match data.db.save_user(&user).await {
-        Ok(_) => {
-            // Send successful heartbeats for both API and DB
-            data.heartbeat.send_heartbeat(true, true, None).await;
-            data.heartbeat.send_heartbeat(false, true, None).await;
-
-            HttpResponse::Ok().json(serde_json::json!({
-                "public_key": public_key,
-                "private_key": private_key
-            }))
-        }
+        Ok(_) => HttpResponse::Ok().json(serde_json::json!({
+            "public_key": public_key,
+            "private_key": private_key
+        })),
         Err(e) => {
-            let error_msg = format!("Failed to register user: {}", e);
-            // Send failure heartbeat for DB
-            data.heartbeat.send_heartbeat(false, false, Some(error_msg.clone())).await;
-
-            HttpResponse::InternalServerError().body(error_msg)
+            HttpResponse::InternalServerError().body(format!("Failed to register a user: {}", e))
         }
     }
 }
 
-#[post("/user_info")]
+#[post("/user_info")] 
 async fn get_user_info(
     data: web::Data<AppState>,
     req: web::Json<UserInfoRequest>,
@@ -507,10 +437,6 @@ async fn get_user_info(
 
     match data.db.find_user_by_public_key(&decoded_key).await {
         Ok(Some(user)) => {
-            // Enviar heartbeats exitosos para API y DB
-            data.heartbeat.send_heartbeat(true, true, None).await;  // API heartbeat
-            data.heartbeat.send_heartbeat(false, true, None).await; // DB heartbeat
-
             let response = serde_json::json!({
                 "id": user.id,
                 "public_key": user.public_key,
@@ -521,17 +447,9 @@ async fn get_user_info(
             });
             HttpResponse::Ok().json(response)
         }
-        Ok(None) => {
-            // Solo enviamos heartbeat de API exitoso ya que la DB funcionó correctamente
-            data.heartbeat.send_heartbeat(true, true, None).await;
-            data.heartbeat.send_heartbeat(false, true, None).await;
-            HttpResponse::NotFound().body("User not found")
-        }
+        Ok(None) => HttpResponse::NotFound().body("User not found"),
         Err(e) => {
-            let error_message = format!("Error while searching a user: {}", e);
-            // Enviar heartbeat de fallo para la DB
-            data.heartbeat.send_heartbeat(false, false, Some(error_message.clone())).await;
-            HttpResponse::InternalServerError().body(error_message)
+            HttpResponse::InternalServerError().body(format!("Error while searching a user: {}", e))
         }
     }
 }
@@ -692,18 +610,19 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
-    let app_state = web::Data::new(AppState {
-        db: db_config,
-        heartbeat: HeartbeatConfig::new(),
-    });
+    let app_state = web::Data::new(AppState { db: db_config });
 
     HttpServer::new(move || {
         App::new()
             .app_data(app_state.clone())
             .service(register_user)
-        // ... other services ...
+            .service(get_user_info)
+            .service(update_user_info)
+            .service(create_identity_proof)
+            .service(verify_identity)
+            .service(check_identity)
     })
-        .bind("127.0.0.1:37879")?
+        .bind("127.0.0.1:37879")?  // Bind to localhost only
         .workers(2)
         .run()
         .await
