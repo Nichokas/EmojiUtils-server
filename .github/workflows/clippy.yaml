@@ -1,0 +1,20 @@
+name: Rust Clippy
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  clippy:
+    name: Clippy Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: LoliGothick/clippy-check@master
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          deny: warnings
