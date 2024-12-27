@@ -396,6 +396,27 @@ fn generate_hex_sequence(length: usize) -> String {
         .collect()
 }
 
+#[get("/health")]
+async fn health_check(data: web::Data<AppState>) -> impl Responder {
+    match data.db.pool.get().await {
+        Ok(_) => {
+            HttpResponse::Ok().json(serde_json::json!({
+                "status": "healthy",
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "database": "connected",
+                "version": env!("CARGO_PKG_VERSION", "unknown")
+            }))
+        }
+        Err(_) => {
+            HttpResponse::ServiceUnavailable().json(serde_json::json!({
+                "status": "unhealthy",
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "database": "disconnected"
+            }))
+        }
+    }
+}
+
 #[post("/register")]
 async fn register_user(
     data: web::Data<AppState>,
@@ -621,6 +642,7 @@ async fn main() -> std::io::Result<()> {
             .service(create_identity_proof)
             .service(verify_identity)
             .service(check_identity)
+            .service(health_check)
     })
         .bind("127.0.0.1:37879")?  // Bind to localhost only
         .workers(2)
