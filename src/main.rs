@@ -312,10 +312,10 @@ impl DatabaseConfig {
     ) -> Result<Option<User>, Box<dyn std::error::Error>> {
         let client = self.pool.get().await?;
 
-        // Primero calculamos el hash de la private key proporcionada
+        // Calc hash
         let (private_key_hash, _) = hash_private_key(private_key);
 
-        // Buscamos usuarios que coincidan con el patrón del hash
+        // Search users
         let hash_pattern = format!("{}%", private_key_hash.split('$').take(4).collect::<Vec<_>>().join("$"));
 
         let rows = client
@@ -328,7 +328,6 @@ impl DatabaseConfig {
             )
             .await?;
 
-        // Verificamos la private key con los resultados filtrados
         for row in rows {
             let user = User {
                 id: row.get("id"),
@@ -396,6 +395,34 @@ fn generate_hex_sequence(length: usize) -> String {
         .collect()
 }
 
+async fn send_heartbeat(success: bool, message: Option<String>) {
+    let base_url = "https://uptime.betterstack.com/api/v1/heartbeat/R9NpkjMdnTPHmMkuiosUE74z";
+    let client = reqwest::Client::new();
+
+    let url = if success {
+        base_url.to_string()
+    } else {
+        format!("{}/fail", base_url)
+    };
+
+    // Si hay un mensaje, lo enviamos en el body
+    let result = if let Some(msg) = message {
+        client.post(&url)
+            .body(msg)
+            .send()
+            .await
+    } else {
+        client.post(&url)
+            .send()
+            .await
+    };
+
+    if let Err(e) = result {
+        eprintln!("Error sending heartbeat: {}", e);
+    }
+}
+
+
 #[get("/health")]
 async fn health_check(data: web::Data<AppState>) -> impl Responder {
     match data.db.pool.get().await {
@@ -436,11 +463,19 @@ async fn register_user(
     };
 
     match data.db.save_user(&user).await {
-        Ok(_) => HttpResponse::Ok().json(serde_json::json!({
-            "public_key": public_key,
-            "private_key": private_key
-        })),
+        Ok(_) => {
+            // Enviar heartbeat exitoso
+            send_heartbeat(true, Some(format!("New user registered with ID: {}", user.id))).await;
+
+            HttpResponse::Ok().json(serde_json::json!({
+                "public_key": public_key,
+                "private_key": private_key
+            }))
+        }
         Err(e) => {
+            // Enviar heartbeat fallido
+            send_heartbeat(false, Some(format!("Failed to register user: {}", e))).await;
+
             HttpResponse::InternalServerError().body(format!("Failed to register a user: {}", e))
         }
     }
