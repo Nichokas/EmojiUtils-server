@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.head_ref }}     # Esto asegura que hacemos checkout de la rama del PR
+          ref: ${{ github.head_ref }} 
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
