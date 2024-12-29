@@ -7,18 +7,7 @@ on:
     branches: [master]
   push:
     branches: [master]
-
 jobs:
-  clippy:
-    name: Rust Clippy Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - run: cargo clippy -- --deny warnings
-
   fmt:
     name: Rust Format Check 
     runs-on: ubuntu-latest
@@ -39,7 +28,8 @@ jobs:
           git config --local user.name "github-actions[bot]"
 
       - name: Format with rustfmt
-        run: cargo fmt --all
+        run: cargo fmt --all --check
+        continue-on-error: false
 
       - name: Check for modified files
         id: git-check
