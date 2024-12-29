@@ -6,11 +6,11 @@ on:
   pull_request:
     branches: [master]
   push:
-    branches: [master]  # Añadido para que se ejecute también en pushes
+    branches: [master]
 
 jobs:
   clippy:
-    name: Rust Clippy Check  # Nombre más descriptivo
+    name: Rust Clippy Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,7 +20,7 @@ jobs:
       - run: cargo clippy -- --deny warnings
 
   fmt:
-    name: Rust Format Check  # Nombre más descriptivo
+    name: Rust Format Check 
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
