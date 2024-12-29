@@ -5,15 +5,22 @@ permissions:
 on:
   pull_request:
     branches: [master]
+  push:
+    branches: [master]  # Añadido para que se ejecute también en pushes
 
 jobs:
   clippy:
+    name: Rust Clippy Check  # Nombre más descriptivo
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - run: cargo clippy -- --deny warnings
+
   fmt:
-    name: Format Rust code
+    name: Rust Format Check  # Nombre más descriptivo
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
