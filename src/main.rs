@@ -35,7 +35,7 @@ struct UpdateUserInfo {
     gpg_fingerprint: Option<String>,
 }
 
-#[derive(Deserialize, Debug)] 
+#[derive(Deserialize, Debug)]
 struct RegisterUserInfo {
     name: Option<String>,
     email: Option<String>,
@@ -258,7 +258,7 @@ impl DatabaseConfig {
             Ok(None)
         }
     }
-   
+
     async fn hex_code_exists(&self, hex_code: &str) -> Result<bool, Box<dyn std::error::Error>> {
         let client = self.pool.get().await?;
 
@@ -277,12 +277,7 @@ impl DatabaseConfig {
     ) -> Result<Option<User>, Box<dyn std::error::Error>> {
         let client = self.pool.get().await?;
 
-        let rows = client
-            .query(
-                "SELECT * FROM users",
-                &[],
-            )
-            .await?;
+        let rows = client.query("SELECT * FROM users", &[]).await?;
 
         // Iteramos por los usuarios hasta encontrar uno que coincida con la private key
         for row in rows {
@@ -314,7 +309,14 @@ impl DatabaseConfig {
         let (private_key_hash, _) = hash_private_key(private_key);
 
         // Search users
-        let hash_pattern = format!("{}%", private_key_hash.split('$').take(4).collect::<Vec<_>>().join("$"));
+        let hash_pattern = format!(
+            "{}%",
+            private_key_hash
+                .split('$')
+                .take(4)
+                .collect::<Vec<_>>()
+                .join("$")
+        );
 
         let rows = client
             .query(
@@ -405,14 +407,9 @@ async fn send_heartbeat(success: bool, message: Option<String>) {
 
     // Si hay un mensaje, lo enviamos en el body
     let result = if let Some(msg) = message {
-        client.post(&url)
-            .body(msg)
-            .send()
-            .await
+        client.post(&url).body(msg).send().await
     } else {
-        client.post(&url)
-            .send()
-            .await
+        client.post(&url).send().await
     };
 
     if let Err(e) = result {
@@ -420,25 +417,20 @@ async fn send_heartbeat(success: bool, message: Option<String>) {
     }
 }
 
-
 #[get("/health")]
 async fn health_check(data: web::Data<AppState>) -> impl Responder {
     match data.db.pool.get().await {
-        Ok(_) => {
-            HttpResponse::Ok().json(serde_json::json!({
-                "status": "healthy",
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-                "database": "connected",
-                "version": env!("CARGO_PKG_VERSION", "unknown")
-            }))
-        }
-        Err(_) => {
-            HttpResponse::ServiceUnavailable().json(serde_json::json!({
-                "status": "unhealthy",
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-                "database": "disconnected"
-            }))
-        }
+        Ok(_) => HttpResponse::Ok().json(serde_json::json!({
+            "status": "healthy",
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "database": "connected",
+            "version": env!("CARGO_PKG_VERSION", "unknown")
+        })),
+        Err(_) => HttpResponse::ServiceUnavailable().json(serde_json::json!({
+            "status": "unhealthy",
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "database": "disconnected"
+        })),
     }
 }
 
@@ -463,7 +455,11 @@ async fn register_user(
     match data.db.save_user(&user).await {
         Ok(_) => {
             // Enviar heartbeat exitoso
-            send_heartbeat(true, Some(format!("New user registered with ID: {}", user.id))).await;
+            send_heartbeat(
+                true,
+                Some(format!("New user registered with ID: {}", user.id)),
+            )
+            .await;
 
             HttpResponse::Ok().json(serde_json::json!({
                 "public_key": public_key,
@@ -479,7 +475,7 @@ async fn register_user(
     }
 }
 
-#[post("/user_info")] 
+#[post("/user_info")]
 async fn get_user_info(
     data: web::Data<AppState>,
     req: web::Json<UserInfoRequest>,
@@ -591,28 +587,24 @@ async fn verify_identity(
     req: web::Json<VerifyProofRequest>,
 ) -> impl Responder {
     match data.db.verify_identity_proof(&req.emoji_sequence).await {
-        Ok(Some((created_at, public_key, valid))) => {
-            HttpResponse::Ok()
-                .content_type("application/json")
-                .json(serde_json::json!({
-                    "verified": valid,
-                    "created_at": created_at,
-                    "public_key": public_key,
-                    "created_at_utc": {
-                        "hour": created_at.hour(),
-                        "minute": created_at.minute(),
-                        "second": created_at.second()
-                    }
-                }))
-        }
-        Ok(None) => {
-            HttpResponse::Ok()
-                .content_type("application/json")
-                .json(serde_json::json!({
-                    "verified": false,
-                    "message": "Invalid proof or expired"
-                }))
-        }
+        Ok(Some((created_at, public_key, valid))) => HttpResponse::Ok()
+            .content_type("application/json")
+            .json(serde_json::json!({
+                "verified": valid,
+                "created_at": created_at,
+                "public_key": public_key,
+                "created_at_utc": {
+                    "hour": created_at.hour(),
+                    "minute": created_at.minute(),
+                    "second": created_at.second()
+                }
+            })),
+        Ok(None) => HttpResponse::Ok()
+            .content_type("application/json")
+            .json(serde_json::json!({
+                "verified": false,
+                "message": "Invalid proof or expired"
+            })),
         Err(e) => {
             eprintln!("Verification error: {}", e);
             HttpResponse::InternalServerError()
@@ -629,7 +621,11 @@ async fn check_identity(
     data: web::Data<AppState>,
     req: web::Json<CheckIdentityRequest>,
 ) -> impl Responder {
-    match data.db.find_user_by_private_key_only(&req.private_key).await {
+    match data
+        .db
+        .find_user_by_private_key_only(&req.private_key)
+        .await
+    {
         Ok(Some(user)) => {
             // Si encontramos un usuario, devolvemos true y su public key
             HttpResponse::Ok().json(serde_json::json!({
@@ -677,8 +673,8 @@ async fn main() -> std::io::Result<()> {
             .service(check_identity)
             .service(health_check)
     })
-        .bind("127.0.0.1:37879")?  // Bind to localhost only
-        .workers(2)
-        .run()
-        .await
+    .bind("127.0.0.1:37879")? // Bind to localhost only
+    .workers(2)
+    .run()
+    .await
 }
