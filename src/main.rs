@@ -13,8 +13,6 @@ use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
 use tokio_postgres::NoTls;
 use uuid::Uuid;
-use std::os::unix::net::UnixListener;
-use actix_web::web::Data;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct User {
@@ -121,7 +119,7 @@ impl DatabaseConfig {
     async fn save_user(&self, user: &User) -> Result<(), Box<dyn std::error::Error>> {
         let client = self.pool.get().await?;
 
-        let result = client.execute(
+        let _result = client.execute(
             "INSERT INTO users (id, public_key, private_key_hash, salt, name, email, phone_number, gpg_fingerprint)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             &[
